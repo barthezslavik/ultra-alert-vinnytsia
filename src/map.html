@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ultra Alert — карта</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg: #fff; --fg: #111; --muted: #666; --panel: rgba(255,255,255,.92); --threat: #d70015; --drone: #e8590c; --slow: #1971c2; --path: #555; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111; --fg: #eee; --muted: #999; --panel: rgba(28,28,30,.92); --path: #bbb; }
+    .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9); }
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel { position: absolute; z-index: 1000; top: 12px; left: 12px; right: 12px; max-width: 520px;
+    background: var(--panel); border-radius: 12px; padding: 10px 14px; box-shadow: 0 2px 12px rgba(0,0,0,.25); }
+  #title { font: 600 28px "SF Pro Rounded", -apple-system, sans-serif; font-variant-numeric: tabular-nums; }
+  #panel.threat #title { color: var(--threat); }
+  #status { margin-top: 2px; }
+  #eta, #post, #age { color: var(--muted); margin-top: 4px; font-size: 13px; }
+  #post:empty, #eta:empty, #ifcity:empty { display: none; }
+  #ifcity { color: var(--muted); margin-top: 4px; font-size: 13px; }
+  #oddsbox { display: none; margin-top: 8px; }
+  #oddsbox.on { display: block; }
+  #oddshead { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  #oddsnow { font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 600; }
+  #oddssvg { display: block; width: 100%; height: 56px; cursor: pointer; }
+  .wp { font-size: 12px; }
+  #hist { position: absolute; z-index: 1000; left: 12px; bottom: 24px; background: var(--panel); border-radius: 8px;
+    padding: 6px 10px; font-size: 13px; box-shadow: 0 1px 6px rgba(0,0,0,.2); cursor: pointer; user-select: none; }
+  #hist input { vertical-align: -2px; margin: 0 6px 0 0; }
+  #histn, #listn { color: var(--muted); }
+  #list { position: absolute; z-index: 1000; top: 12px; right: 12px; bottom: 96px; width: 300px; display: flex; flex-direction: column;
+    background: var(--panel); border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.25); overflow: hidden; }
+  #list h2 { margin: 0; padding: 10px 14px 6px; font-size: 15px; }
+  #items { overflow-y: auto; padding: 0 6px 8px; }
+  .day { color: var(--muted); font-size: 12px; margin: 10px 8px 4px; }
+  .item { padding: 6px 8px; border-radius: 8px; cursor: pointer; border-left: 3px solid transparent; }
+  .item:hover { background: rgba(127,127,127,.15); }
+  .item.on { background: rgba(10,132,255,.18); }
+  .item.hot { border-left-color: var(--threat); }
+  .item .when { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px; }
+  .item .where { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .item .boom { color: var(--threat); font-size: 12px; margin-top: 2px; }
+  #listbtn { display: none; }
+  #player { position: absolute; z-index: 1000; bottom: 64px; left: 12px; width: min(520px, calc(100% - 348px)); box-sizing: border-box;
+    background: var(--panel); border-radius: 10px; padding: 6px 10px; box-shadow: 0 1px 6px rgba(0,0,0,.2);
+    display: none; align-items: center; gap: 8px; font-size: 13px; }
+  #player.on { display: flex; }
+  #player button, #player select, #listbtn { font: inherit; color: var(--fg); background: rgba(127,127,127,.18); border: 0; border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+  #seek { flex: 1; min-width: 60px; }
+  #clock { font-variant-numeric: tabular-nums; }
+  #mode { color: var(--drone); font-size: 13px; margin-top: 4px; }
+  #mode:empty { display: none; }
+  @media (max-width: 880px) {
+    #list { display: none; top: auto; left: 12px; right: 12px; width: auto; height: 45%; bottom: 64px; }
+    #list.open { display: flex; }
+    #listbtn { display: block; position: absolute; z-index: 1000; right: 12px; bottom: 110px; box-shadow: 0 1px 6px rgba(0,0,0,.2); background: var(--panel); }
+    #player { right: 12px; width: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<label id="hist"><input type="checkbox" id="histbox">Історія траєкторій <span id="histn"></span></label>
+<div id="panel">
+  <div id="title">…</div>
+  <div id="status">Завантаження…</div>
+  <div id="eta"></div>
+  <div id="ifcity"></div>
+  <div id="post"></div>
+  <div id="age"></div>
+  <div id="mode"></div>
+  <div id="oddsbox">
+    <div id="oddshead"><span>Ймовірність, що підуть на Вінницю</span><span id="oddsnow"></span></div>
+    <svg id="oddssvg" preserveAspectRatio="none"></svg>
+  </div>
+</div>
+<div id="list"><h2>Шахеди <span id="listn"></span></h2><div id="items"></div></div>
+<button id="listbtn">Шахеди</button>
+<div id="player">
+  <button id="play">⏸</button>
+  <select id="speed"><option value="1">×1</option><option value="5">×5</option><option value="10" selected>×10</option><option value="30">×30</option><option value="60">×60</option></select>
+  <input type="range" id="seek" step="1000">
+  <span id="clock"></span>
+  <button id="live">Наживо</button>
+</div>
+<script>
+const map = L.map('map', { zoomControl: false }).setView([49.23, 28.47], 8);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 17, attribution: '© OpenStreetMap'
+}).addTo(map);
+
+// Past tracks go under the live drones.
+const historyLayer = L.layerGroup().addTo(map);
+const layer = L.layerGroup().addTo(map);
+let home, framed = false, state = null, lastOk = 0, skew = 0;
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const $ = id => document.getElementById(id);
+const hhmmss = t => new Date(t).toLocaleTimeString('uk-UA');
+
+// Point `km` along `bearing` from (lat, lon) on a sphere.
+function destination(lat, lon, bearing, km) {
+  const r = Math.PI / 180, d = km / 6371, b = bearing * r, p1 = lat * r, l1 = lon * r;
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [p2 / r, l2 / r];
+}
+
+function arrow(course, color) {
+  const svg = course == null
+    ? `<svg width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="${color}" stroke="#fff" stroke-width="2"/><text x="11" y="15" font-size="11" text-anchor="middle" fill="#fff" font-weight="700">?</text></svg>`
+    : `<svg width="28" height="28" viewBox="0 0 28 28" style="transform: rotate(${course}deg)"><path d="M14 2 L23 25 L14 19 L5 25 Z" fill="${color}" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  const size = course == null ? 22 : 28;
+  return L.divIcon({ html: svg, className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
+}
+
+// Everything but the moving drones; rebuilt only when its content changes.
+let shape = '', live = [], received = 0;
+
+function tip(s, d) {
+  return `${d.slow ? 'Шахед' : 'Реактивний шахед'} → ${d.heading_to}<br>${d.km.toFixed(1)} км ${s.home.from}, ${d.closing ? 'наближається' : 'віддаляється'}`;
+}
+
+function draw(s) {
+  const key = JSON.stringify([s.home, !!s.threat && s.threat.sigma_s, !!s.impact,
+    s.drones.map(d => [d.path, d.course, d.heading_to, d.slow, d.km < 15])]);
+  if (key === shape) {
+    // Same drones on the same paths: frame() moves them.
+    s.drones.forEach((d, i) => {
+      live[i].d = d;
+      live[i].marker.setTooltipContent(tip(s, d));
+    });
+    return;
+  }
+  shape = key;
+  live = [];
+  layer.clearLayers();
+  const fg = css('--path'), drone = css('--drone'), threat = css('--threat');
+  home = [s.home.lat, s.home.lon];
+  L.circleMarker(home, { radius: 7, color: '#fff', weight: 2, fillColor: '#0a84ff', fillOpacity: 1 })
+    .bindTooltip(s.home.label).addTo(layer);
+  if (s.threat) {
+    // Radius the drone covers in σ: where it may be when the ETA comes.
+    L.circle(home, { radius: s.threat.sigma_s * s.speed_kmh / 3.6, color: threat, weight: 1, fillOpacity: .08 }).addTo(layer);
+  }
+  if (s.impact) {
+    L.circleMarker(home, { radius: 18, color: threat, weight: 3, fill: false }).addTo(layer);
+  }
+  const bounds = [home];
+  for (const d of s.drones) {
+    const color = d.km < 15 ? threat : drone;
+    const pts = d.path.map(p => [p[1], p[2]]);
+    if (pts.length > 1) L.polyline(pts, { color: fg, weight: 2, opacity: .7 }).addTo(layer);
+    d.path.forEach((p, i) => {
+      L.circleMarker([p[1], p[2]], { radius: 4, color: fg, weight: 1, fillColor: fg, fillOpacity: i == d.path.length - 1 ? 1 : .4 })
+        .bindTooltip(p[0], { className: 'wp', permanent: i == d.path.length - 1, direction: 'right', offset: [6, 0] })
+        .addTo(layer);
+      bounds.push([p[1], p[2]]);
+    });
+    let trail = null, ahead = null;
+    if (d.course == null) {
+      // Course unknown: somewhere about L short of the waypoint, from any side.
+      L.circle([d.lat, d.lon], { radius: d.lead_km * 1000, color, weight: 1.5, dashArray: '4 6', fillOpacity: .05 }).addTo(layer);
+    } else {
+      // Dead reckoning since the last waypoint was announced, and five minutes ahead.
+      trail = L.polyline([pts[pts.length - 1], [d.lat, d.lon]], { color, weight: 2, opacity: .8 }).addTo(layer);
+      ahead = L.polyline([[d.lat, d.lon], destination(d.lat, d.lon, d.course, d.speed_kmh / 12)],
+        { color, weight: 2, dashArray: '6 6' }).addTo(layer);
+    }
+    const marker = L.marker([d.lat, d.lon], { icon: arrow(d.course, color) }).bindTooltip(tip(s, d)).addTo(layer);
+    live.push({ d, marker, trail, ahead });
+    bounds.push([d.lat, d.lon]);
+  }
+  if (!framed && s.drones.length) {
+    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 10 });
+    framed = true;
+  }
+}
+
+// Every frame, each drone flies on along its course from its last pushed position, on the
+// app's clock (a replay runs faster); the next update lands where it already is.
+function frame() {
+  if (replay) tick();
+  if (state) {
+    // A replay knows exactly how far its clock is past the frame.
+    const dt = replay
+      ? (replay.t - Date.parse(state.now)) / 1000
+      : Math.min((performance.now() - received) / 1000, 2) * state.rate;
+    for (const { d, marker, trail, ahead } of live) {
+      if (d.course == null) continue;
+      const at = destination(d.lat, d.lon, d.course, d.speed_kmh * dt / 3600);
+      marker.setLatLng(at);
+      trail.setLatLngs([trail.getLatLngs()[0], at]);
+      ahead.setLatLngs([at, destination(at[0], at[1], d.course, d.speed_kmh / 12)]);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+function panel() {
+  if (!state) return;
+  const s = state;
+  let title = s.title;
+  if (s.threat) {
+    const left = Math.max(0, Math.round((Date.parse(s.threat.eta) - Date.now() - skew) / 1000));
+    title = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+  }
+  $('panel').className = s.threat || s.impact || s.possible ? 'threat' : '';
+  $('title').textContent = title;
+  $('status').textContent = s.status;
+  $('eta').textContent = s.eta;
+  $('ifcity').textContent = s.if_city && !s.if_city.endsWith('—') ? s.if_city : '';
+  $('post').textContent = s.post ? `${hhmmss(s.post.time)} · ${s.post.channel ? 'резерв @' + s.post.channel + ' · ' : ''}${s.post.text}` : '';
+  const age = (Date.now() - lastOk) / 1000;
+  $('age').textContent = !replay && age > 5 ? `Немає зв'язку з застосунком ${Math.round(age)} с` : '';
+  $('mode').textContent = replay ? `▶ Повтор · ${dayname(replay.t)} ${hhmmss(replay.t)}` : '';
+}
+
+// Every past drone: pick one and the map plays its flight back from the app's own frames,
+// the tracker seeing only the posts up to each moment, as it did live.
+let replay = null, liveState = null, drones = [];
+const guide = L.layerGroup().addTo(map);
+const hhmm = t => new Date(t).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+const dayname = t => new Date(t).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+async function loadDrones() {
+  const r = await fetch('/drones.json', { cache: 'no-store' }).catch(() => null);
+  if (!r || !r.ok) {
+    $('listn').textContent = '(ще рахується)';
+    setTimeout(loadDrones, 2000);
+    return;
+  }
+  const fresh = await r.json();
+  // The app adds drones as the channel posts; redrawn only when the list changed.
+  if (JSON.stringify(fresh) === JSON.stringify(drones)) return;
+  drones = fresh;
+  const chosen = document.querySelector('.item.on')?.dataset.i;
+  $('listn').textContent = `(${drones.length})`;
+  const list = $('items');
+  list.innerHTML = '';
+  let day = '';
+  for (let i = drones.length - 1; i >= 0; i--) {
+    const d = drones[i];
+    const date = new Date(d.start).toLocaleDateString('uk-UA', { weekday: 'short', day: 'numeric', month: 'long' });
+    if (date !== day) {
+      day = date;
+      list.insertAdjacentHTML('beforeend', `<div class="day">${date}</div>`);
+    }
+    const el = document.createElement('div');
+    el.className = 'item' + (d.hit ? ' hot' : '');
+    el.dataset.i = i;
+    const span = d.last !== d.start ? `${hhmm(d.start)}–${hhmm(d.last)}` : hhmm(d.start);
+    el.innerHTML = `<div class="when">${span} · ${d.slow ? 'звичайний' : 'реактивний'}</div>`
+      + `<div class="where">${esc(d.path.filter((p, k) => p !== d.path[k - 1]).join(' → '))}</div>`
+      + (d.hit ? `<div class="boom">💥 ${esc(d.hit.place)} ${hhmm(d.hit.t)}</div>` : '');
+    el.onclick = () => startReplay(i);
+    list.append(el);
+  }
+  if (chosen != null) document.querySelector(`.item[data-i="${chosen}"]`)?.classList.add('on');
+}
+
+async function startReplay(i) {
+  document.querySelectorAll('.item.on').forEach(e => e.classList.remove('on'));
+  document.querySelector(`.item[data-i="${i}"]`)?.classList.add('on');
+  $('mode').textContent = '▶ Повтор · завантаження…';
+  const r = await fetch(`/replay/${i}.json`, { cache: 'no-store' }).catch(() => null);
+  if (!r || !r.ok) {
+    $('mode').textContent = 'Повтор не вдався';
+    return;
+  }
+  const { step, frames } = await r.json();
+  const t0 = Date.parse(frames[0].now);
+  replay = { frames, step: step * 1000, t0, t: t0, end: Date.parse(frames[frames.length - 1].now),
+    idx: -1, playing: true, last: performance.now() };
+  drawOdds();
+  $('seek').min = t0;
+  $('seek').max = replay.end;
+  $('play').textContent = '⏸';
+  $('player').classList.add('on');
+  $('list').classList.remove('open');
+  shape = '';
+  // The chosen drone's whole flight, faint, under the replay; the map frames it.
+  guide.clearLayers();
+  const line = drones[i].line;
+  if (line.length > 1) {
+    L.polyline(line, { color: css('--drone'), weight: 4, opacity: .25 }).addTo(guide).bringToBack();
+    map.fitBounds(line, { paddingTopLeft: [40, 180], paddingBottomRight: [innerWidth > 880 ? 340 : 40, 130], maxZoom: 10 });
+  } else if (line.length) {
+    map.setView(line[0], 9);
+  }
+  framed = true;
+}
+
+// Moves the replay clock and shows the frame it is in.
+function tick() {
+  const now = performance.now();
+  if (replay.playing) replay.t += (now - replay.last) * +$('speed').value;
+  replay.last = now;
+  if (replay.t >= replay.end) {
+    replay.t = replay.end;
+    replay.playing = false;
+    $('play').textContent = '▶';
+  }
+  const idx = Math.min(replay.frames.length - 1, Math.max(0, Math.floor((replay.t - replay.t0) / replay.step)));
+  if (idx !== replay.idx) {
+    replay.idx = idx;
+    state = replay.frames[idx];
+    draw(state);
+  }
+  skew = replay.t - Date.now();
+  if (document.activeElement !== $('seek')) $('seek').value = replay.t;
+  $('clock').textContent = `${dayname(replay.t)} ${hhmmss(replay.t)}`;
+  const cur = $('oddscur');
+  if (cur) cur.setAttribute('transform', `translate(${oddsX(replay.t)},0)`);
+  $('oddsnow').textContent = state.threat ? 'летить на місто' : state.odds ? `${Math.round(state.odds.p * 100)}%` : '—';
+}
+
+// The odds over the whole replay, as the app had them at each moment: a line, red where a
+// drone was already sent to the city, dashed at 30% where the menu bar turns to km.
+const ODDS_W = 500, ODDS_H = 56;
+const oddsX = t => (t - replay.t0) / Math.max(1, replay.end - replay.t0) * ODDS_W;
+function drawOdds() {
+  const f = replay.frames;
+  const top = Math.max(0.35, ...f.map(s => s.odds ? s.odds.p : 0));
+  const y = p => ODDS_H - 3 - p / top * (ODDS_H - 6);
+  let line = '', pen = false, bands = '', from = null;
+  f.forEach((s, i) => {
+    const x = oddsX(Date.parse(s.now)).toFixed(1);
+    if (s.threat && from == null) from = x;
+    if (from != null && (!s.threat || i === f.length - 1)) {
+      bands += `<rect x="${from}" y="0" width="${Math.max(2, x - from)}" height="${ODDS_H}" fill="${css('--threat')}" opacity=".2"/>`;
+      from = null;
+    }
+    if (!s.odds || s.threat) { pen = false; return; }
+    line += `${pen ? 'L' : 'M'}${x},${y(s.odds.p).toFixed(1)}`;
+    pen = true;
+  });
+  const svg = $('oddssvg');
+  svg.setAttribute('viewBox', `0 0 ${ODDS_W} ${ODDS_H}`);
+  svg.innerHTML = bands
+    + `<line x1="0" x2="${ODDS_W}" y1="${y(.3)}" y2="${y(.3)}" stroke="${css('--muted')}" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>`
+    + `<path d="${line}" fill="none" stroke="${css('--drone')}" stroke-width="2" vector-effect="non-scaling-stroke"/>`
+    + `<line id="oddscur" x1="0" x2="0" y1="0" y2="${ODDS_H}" stroke="${css('--fg')}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+  $('oddsbox').classList.add('on');
+}
+$('oddssvg').onclick = e => {
+  if (!replay) return;
+  const box = e.currentTarget.getBoundingClientRect();
+  replay.t = replay.t0 + (e.clientX - box.left) / box.width * (replay.end - replay.t0);
+};
+
+function stopReplay() {
+  replay = null;
+  guide.clearLayers();
+  $('player').classList.remove('on');
+  $('oddsbox').classList.remove('on');
+  document.querySelectorAll('.item.on').forEach(e => e.classList.remove('on'));
+  shape = '';
+  state = liveState;
+  if (state) {
+    skew = Date.parse(state.now) - Date.now();
+    draw(state);
+  }
+}
+
+$('play').onclick = () => {
+  if (!replay) return;
+  if (!replay.playing && replay.t >= replay.end) replay.t = replay.t0;
+  replay.playing = !replay.playing;
+  $('play').textContent = replay.playing ? '⏸' : '▶';
+};
+$('seek').oninput = e => { if (replay) replay.t = +e.target.value; };
+$('live').onclick = stopReplay;
+$('listbtn').onclick = () => $('list').classList.toggle('open');
+loadDrones();
+setInterval(loadDrones, 60000);
+
+// Every past track from the channel history, drawn faintly; loaded on first check.
+let historyLoaded = false;
+async function showHistory(on) {
+  try { localStorage.setItem('history', on ? '1' : ''); } catch (e) {}
+  if (!on) {
+    historyLayer.clearLayers();
+    historyLoaded = false;
+    $('histn').textContent = '';
+    return;
+  }
+  if (historyLoaded) return;
+  $('histn').textContent = '…';
+  const r = await fetch('/history.json', { cache: 'no-store' }).catch(() => null);
+  if (!r || !r.ok) {
+    // Still being computed right after the app starts.
+    $('histn').textContent = '(ще рахується)';
+    setTimeout(() => $('histbox').checked && showHistory(true), 2000);
+    return;
+  }
+  const tracks = await r.json();
+  if (!$('histbox').checked) return;
+  const jet = css('--drone'), slow = css('--slow');
+  for (const t of tracks) {
+    const when = new Date(t.start).toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    // The model's flight (smoothed), not straight lines between town centres.
+    L.polyline(t.line, { color: t.slow ? slow : jet, weight: 2, opacity: .3 })
+      .bindTooltip(`${when} · ${t.slow ? 'шахед' : 'реактивний'}<br>${t.path.map(p => p[0]).join(' → ')}`, { sticky: true })
+      .addTo(historyLayer);
+  }
+  historyLoaded = true;
+  $('histn').textContent = `(${tracks.length})`;
+}
+$('histbox').onchange = e => showHistory(e.target.checked);
+// Remembered from the last visit, or asked for by the link (…/#history).
+let wanted = location.hash === '#history';
+try { wanted ||= !!localStorage.getItem('history'); } catch (e) {}
+{
+  if (wanted) {
+    $('histbox').checked = true;
+    showHistory(true);
+  }
+}
+
+// The app pushes its state on every refresh; EventSource reconnects by itself.
+new EventSource('/events').onmessage = e => {
+  liveState = JSON.parse(e.data);
+  lastOk = Date.now();
+  // A replay on the page keeps the map until "Наживо".
+  if (replay) return;
+  state = liveState;
+  // The app's clock, which in a replay runs in the past.
+  skew = Date.parse(state.now) - Date.now();
+  received = performance.now();
+  draw(state);
+};
+setInterval(panel, 250);
+</script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+# Ultra Alert — Вінниця
+
+Програма в рядку меню macOS, яка читає канал [ППО Вінниця](https://t.me/vinnytsiappo) і
+показує, чи летять реактивні шахеди на Вінницю, і через скільки можливий приліт.
+
+- **ймовірність**, що дрони над областю підуть на Вінницю (з того, куди йшли минулі дрони
+  з тих самих місць);
+- **відстань** до найближчого дрона, коли ймовірність висока;
+- **зворотний відлік** до можливого прильоту, щойно канал пише «на Вінницю» чи називає
+  райони міста; звук і сповіщення;
+- **карта** на http://127.0.0.1:47820/ з дронами наживо, усіма минулими траєкторіями та
+  їх повтором.
+
+Це оцінка з постів людей, а не офіційна тривога. Не замінює повітряну тривогу й укриття.
+
+## Встановлення
+
+Потрібні macOS (Apple silicon або Intel), інструменти командного рядка Xcode
+(`xcode-select --install`) і [Rust](https://rustup.rs).
+
+```sh
+git clone https://github.com/barthezslavik/ultra-alert-vinnytsia.git
+cd ultra-alert-vinnytsia
+tools/install.sh
+```
+
+Програма запускається сама при вході в систему. Перший запуск триває близько хвилини: вона
+завантажує історію каналу з t.me (зберігає її в `~/Library/Application Support/ultra-alert/`).
+
+Щодня о 09:00 програма бере оновлені дані й модель із цього репозиторію (`git pull`) і
+перевстановлюється, коли над областю тихо.
+
+## Відстань і час до дому
+
+Без налаштувань усе рахується до центру Вінниці. Щоб до свого дому, створіть
+`~/Library/Application Support/ultra-alert/config.json` з координатами (широта, довгота;
+у Google Maps — правий клік на будинку):
+
+```json
+{"home": [49.2329, 28.4682]}
+```
+
+і перезапустіть `tools/install.sh`. Файл лишається тільки на вашому Mac.
+
+## Видалення
+
+```sh
+launchctl bootout gui/$(id -u)/com.barthezslavik.ultra-alert
+launchctl bootout gui/$(id -u)/com.barthezslavik.ultra-alert.daily
+rm ~/Library/LaunchAgents/com.barthezslavik.ultra-alert{,.daily}.plist
+rm -rf ~/Applications/"Ultra Alert.app" ~/Library/Application\ Support/ultra-alert
+```

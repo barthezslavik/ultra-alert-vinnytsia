@@ -1,0 +1,16 @@
+/target/
+.DS_Store
+/dron/
+/alert/
+# The maintainer's scraped channels, Codex labels and caches: each Mac fetches the channel's
+# history itself (~/Library/Application Support/ultra-alert/history.bin); only the seed
+# (places, districts, model, impacts) is published.
+/data/messages.jsonl
+/data/vinnytsiarealll.jsonl
+/data/zahid.jsonl
+/data/povitryana.jsonl
+/data/events.jsonl
+/data/events_vinnytsiarealll.jsonl
+/data/codex_cache.json
+/data/nominatim_cache.json
+/data/daily_report.md
