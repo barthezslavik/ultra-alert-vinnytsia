@@ -38,6 +38,23 @@ impl Archive {
         }
     }
 
+    /// The posts built into the app (build.rs), where this Mac has none of its own yet: a
+    /// released app then fetches only what came after it was built.
+    pub fn seed(&mut self, gz: &[u8]) -> usize {
+        let mut text = String::new();
+        if GzDecoder::new(gz).read_to_string(&mut text).is_err() {
+            return 0;
+        }
+        let mut added = 0;
+        for p in parse(&text, &self.channel) {
+            if let std::collections::btree_map::Entry::Vacant(e) = self.posts.entry(p.id) {
+                e.insert(p);
+                added += 1;
+            }
+        }
+        added
+    }
+
     pub fn posts(&self) -> Vec<Post> {
         self.posts.values().cloned().collect()
     }
@@ -154,6 +171,15 @@ mod tests {
         let b = Archive::load(path.clone(), "vinnytsiappo");
         let _ = std::fs::remove_file(&path);
         assert_eq!(b.posts(), a.posts());
+        // The seed adds what is missing and leaves an edited post as this Mac has it.
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        writeln!(gz, "{}", serde_json::json!({ "date": "2026-10-26T08:00:00Z", "id": 1, "text": "🛵 на Тиврів" })).unwrap();
+        writeln!(gz, "{}", serde_json::json!({ "date": "2026-10-26T07:00:00Z", "id": 0, "text": "🛵 на Немирів" })).unwrap();
+        let mut c = Archive::load(path.clone(), "vinnytsiappo");
+        c.add(a.posts());
+        assert_eq!(c.seed(&gz.finish().unwrap()), 1);
+        assert_eq!(c.posts().len(), 3);
+        assert!(c.posts().iter().any(|p| p.text.contains("10:09")));
         assert!(!std::fs::read(&path).is_ok());
     }
 }

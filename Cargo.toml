@@ -1,6 +1,6 @@
 [package]
 name = "ultra-alert"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
@@ -15,6 +15,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
 tray-icon = "0.24"
 winit = "0.30"
+
+[build-dependencies]
+flate2 = "1"
 
 [profile.release]
 strip = true

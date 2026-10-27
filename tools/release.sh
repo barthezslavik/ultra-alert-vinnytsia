@@ -6,6 +6,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 tag=${1:?usage: tools/release.sh <tag>}
 
+# The channel's history up to now goes into the app as its seed (build.rs), so it fetches
+# only what comes after.
+cargo run --release -q -- scrape
 target=$(cargo metadata --format-version 1 --no-deps | sed -E 's/.*"target_directory":"([^"]*)".*/\1/')
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
   rustup target add "$t" >/dev/null

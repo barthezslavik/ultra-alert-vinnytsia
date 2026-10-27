@@ -248,6 +248,8 @@ fn past(
 const PLACES_FOUND: &str = "places_found.json";
 /// The channel's history on this Mac (ultra_alert::archive).
 const HISTORY: &str = "history.bin";
+/// Its seed built into the app (build.rs): empty unless built where the posts were scraped.
+const SEED_HISTORY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/seed_history.gz"));
 
 /// The channel's posts from JSON lines like data/messages.jsonl.
 fn history_posts(jsonl: &str) -> Vec<Post> {
@@ -1084,6 +1086,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         let mut archive =
             ultra_alert::archive::Archive::load(support_dir().join(HISTORY), CHANNEL);
+        let seeded = archive.seed(SEED_HISTORY);
+        if seeded > 0 {
+            eprintln!("history: {seeded} posts from the app");
+        }
         // What earlier versions kept beside the history built into them.
         if let Ok(text) = std::fs::read_to_string(support_dir().join("messages_live.jsonl")) {
             archive.add(history_posts(&text));
