@@ -1,14 +1,18 @@
 #!/bin/bash
 # Build "Ultra Alert.app" (menu-bar only, LSUIElement) from a release build.
 # usage: tools/bundle.sh [install-dir]   (default: the cargo target directory)
+# BIN=<binary> bundles that one (tools/release.sh: Apple silicon + Intel) instead of building.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo build --release
 target=$(cargo metadata --format-version 1 --no-deps | sed -E 's/.*"target_directory":"([^"]*)".*/\1/')
+if [ -z "${BIN:-}" ]; then
+  cargo build --release
+  BIN="$target/release/ultra-alert"
+fi
 app="${1:-$target/release}/Ultra Alert.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
-cp "$target/release/ultra-alert" "$app/Contents/MacOS/ultra-alert"
+cp "$BIN" "$app/Contents/MacOS/ultra-alert"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
