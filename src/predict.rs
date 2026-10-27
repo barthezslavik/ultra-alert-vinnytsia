@@ -144,11 +144,13 @@ enum Signal {
     /// `maybe`: "можуть піти на ВІННИЦЮ": where it may go, not where it is sent.
     /// `early`: "залітає на Вінниччину, Вінниця вже може займати укриття": sent to the city
     /// while still at the oblast's edge.
+    /// `passed`: "пролетів Жмеринку": a place it has flown past, not where it heads.
     Drone {
         slow: bool,
         fresh: bool,
         maybe: bool,
         early: bool,
+        passed: bool,
         route: Vec<Mention>,
         district: bool,
         district_at: Option<(f64, f64)>,
@@ -453,6 +455,10 @@ const RAIONS: &[(&[&str], &str, &str)] = &[
 static MAYBE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bмож(е|уть)\s+(піти|йти|повернути|залетіти)\b|\bможлив(о|і)\b|\bпотенційн").unwrap()
 });
+/// Flown past, not heading for: "Реактивний Шахед пролетів Жмеринку".
+static PASSED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bпроле?т(ів|іла|іли|ає|ають)\b|\bпролітає\b|\bпролітають\b|\bминув\b").unwrap()
+});
 static CITY_ALERT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(на|по) міст[оуі]\b|\bвсі\W+в укриття\b|\bв укриття\W+швидко").unwrap()
 });
@@ -686,6 +692,7 @@ impl Tracker {
                 fresh: !summary && self.fresh(text, &route),
                 maybe: self.maybe(text),
                 early: lower.contains("може займати"),
+                passed: !summary && PASSED.is_match(&lower),
                 route,
                 district,
                 district_at,
@@ -904,6 +911,16 @@ impl Tracker {
 
     /// The course past drones came to `at` on (their mean), when there were enough of them and
     /// they mostly agree (mean resultant length at least 0.5); never the same day's.
+    /// How sharply the drone of `t` would turn to fly on to `p`: from its own course, or with
+    /// only one place known, from the way past drones came to it (2026-10-08: "повз Турбів", then
+    /// "поблизу Дашева" is another drone, not one turned back south-east).
+    fn turn(&self, t: &Track, p: &Place, now: DateTime<Utc>) -> f64 {
+        let head = &t.head().place;
+        t.course()
+            .or_else(|| self.approach_course(head, now))
+            .map_or(0.0, |c| angle_between(c, bearing(head, p)))
+    }
+
     fn approach_course(&self, at: &Place, now: DateTime<Utc>) -> Option<f64> {
         let m = &self.model;
         if m.route_radius_km <= 0.0 {
@@ -1198,6 +1215,7 @@ impl Tracker {
                 slow,
                 fresh,
                 maybe,
+                passed,
                 route,
                 summary,
                 district,
@@ -1247,23 +1265,47 @@ impl Tracker {
                     .map(|m| m.place.name.clone())
                     .collect()
             };
+            // Where it may go is no waypoint: it is not flying there yet.
+            let mut heads: Vec<(Place, bool)> = heads
+                .into_iter()
+                .filter(|(p, _)| !(*maybe && p.name == CITY))
+                .map(|(p, slow)| (self.resolve(&tracks, p, e.time, slow), slow))
+                .collect();
+            let turn = |t: &Track, p: &Place| self.turn(t, p, e.time);
+            // A summary's lines go to the drones together: those that fit a drone best first, no
+            // drone taking two (2026-10-15: "на Жмеринку", then "▪️1 на Тульчин; ▪️1 на Бар" is
+            // the one at Жмеринка going on to Бар and another at Тульчин).
+            if heads.len() > 1 {
+                let fit = |p: &Place, slow: bool| {
+                    tracks
+                        .iter()
+                        .filter_map(|t| {
+                            if t.head().place.name == p.name {
+                                return Some(0.0);
+                            }
+                            links(t, p, e.time, slow, &turn).then(|| unlikeness(t, p, &turn))
+                        })
+                        .min_by(f64::total_cmp)
+                        .unwrap_or(f64::INFINITY)
+                };
+                heads.sort_by(|a, b| fit(&a.0, a.1).total_cmp(&fit(&b.0, b.1)));
+            }
+            let mut taken = Vec::new();
             for (p, slow) in heads {
-                // Where it may go is no waypoint: it is not flying there yet.
-                if *maybe && p.name == CITY {
-                    continue;
-                }
-                let p = self.resolve(&tracks, p, e.time, slow);
-                observe(
+                taken.push(observe(
                     &mut tracks,
                     &p,
                     origin.clone(),
                     slow,
                     *fresh,
+                    *passed,
                     e.time,
                     delay_s,
                     &targets,
                     self.model.city_turns,
-                );
+                    &taken,
+                    &turn,
+                ));
             }
         }
         tracks
@@ -1837,11 +1879,14 @@ fn observe(
     origin: Option<Place>,
     slow: bool,
     fresh: bool,
+    passed: bool,
     time: DateTime<Utc>,
     delay_s: f64,
     targets: &[String],
     city_turns: bool,
-) {
+    taken: &[usize],
+    turn: &dyn Fn(&Track, &Place) -> f64,
+) -> usize {
     let add_targets = |t: &mut Track| {
         for name in targets {
             if !t.targets.contains(name) {
@@ -1849,29 +1894,40 @@ fn observe(
             }
         }
     };
-    // Same heading again: a reminder, not a new position; "ще один на X" is another drone.
-    if let Some(t) = tracks
-        .iter_mut()
-        .filter(|t| !fresh && t.head().place.name == p.name)
-        .max_by_key(|t| t.last_seen)
-    {
-        t.last_seen = time;
-        add_targets(t);
-        return;
-    }
     let latest = |pick: &dyn Fn(&Track) -> bool| {
         (0..tracks.len())
-            .filter(|&i| pick(&tracks[i]))
+            .filter(|&i| !taken.contains(&i) && pick(&tracks[i]))
             .max_by_key(|&i| tracks[i].last_seen)
     };
-    let plausible = latest(&|t| {
-        let hours = (time - t.head().first).num_milliseconds() as f64 / 3.6e6;
-        !fresh
-            && hours > 0.0
-            && !placeless(t)
-            && plausible_leg(km(&t.head().place, p), hours, slow || t.head().slow)
-            && t.turn_to(p) <= MAX_TURN_DEG
-    });
+    // Same heading again: a reminder, not a new position; "ще один на X" is another drone.
+    if let Some(i) = latest(&|t| !fresh && t.head().place.name == p.name) {
+        let t = &mut tracks[i];
+        t.last_seen = time;
+        add_targets(t);
+        return i;
+    }
+    // "Пролетів Жмеринку" after "на Бар": it came by Жмеринка on its way to Бар, not back to
+    // it. Where it came from, when nothing earlier says so; else on the way it was flying.
+    if passed
+        && let Some(i) = latest(&|t| {
+            !placeless(t)
+                && time - t.last_seen <= TRACK_TTL
+                && km(&t.head().place, p) <= MAX_LEG_KM
+                && t.tail().is_none_or(|tail| {
+                    km(tail, p) + km(p, &t.head().place) <= 1.25 * km(tail, &t.head().place)
+                })
+        })
+    {
+        let t = &mut tracks[i];
+        if t.points.len() == 1 && t.origin.is_none() {
+            t.origin = Some(p.clone());
+        }
+        t.last_seen = time;
+        return i;
+    }
+    // The drone posted last that could be it: picking the nearest instead made the backtest
+    // worse within 20 s (12 hits to 10).
+    let plausible = latest(&|t| !fresh && links(t, p, time, slow, turn));
     // "на Вінницю" names where a drone turns, so it joins the drone posted last even when it could
     // not be L short of the city by now (14.10: "на Іллінці / Оратів", two minutes later "на
     // ВІННИЦЮ", hit eight minutes after that): that drone is still far out. Of several, the one
@@ -1882,12 +1938,13 @@ fn observe(
             .filter(|&i| {
                 let t = &tracks[i];
                 !fresh
+                    && !taken.contains(&i)
                     && p.name == CITY
                     && !t.head().district
                     && t.head().place.name != CITY
                     && time - t.last_seen <= Duration::minutes(10)
                     && km(&t.head().place, p) <= MAX_LEG_KM
-                    && t.turn_to(p) <= MAX_CITY_TURN_DEG
+                    && turn(t, p) <= MAX_CITY_TURN_DEG
             })
             .min_by(|&a, &b| km(&tracks[a].head().place, p).total_cmp(&km(&tracks[b].head().place, p)))
     };
@@ -1919,21 +1976,48 @@ fn observe(
         t.points = vec![point];
         t.last_seen = time;
         add_targets(t);
-        return;
+        return i;
     }
-    match linked.map(|i| &mut tracks[i]) {
-        Some(t) => {
+    match linked {
+        Some(i) => {
+            let t = &mut tracks[i];
             t.points.push(point);
             t.last_seen = time;
             add_targets(t);
+            i
         }
-        None => tracks.push(Track {
-            points: vec![point],
-            origin,
-            last_seen: time,
-            targets: targets.to_vec(),
-        }),
+        None => {
+            tracks.push(Track {
+                points: vec![point],
+                origin,
+                last_seen: time,
+                targets: targets.to_vec(),
+            });
+            tracks.len() - 1
+        }
     }
+}
+
+/// How badly `p` fits the drone of `t`: the turn it would make, degrees, plus the way to it,
+/// km, so with no course to go by the nearer one wins.
+fn unlikeness(t: &Track, p: &Place, turn: &dyn Fn(&Track, &Place) -> f64) -> f64 {
+    turn(t, p) + km(&t.head().place, p)
+}
+
+/// Could the drone of `t` be the one posted at `p` now: near enough for the time since, and no
+/// sharper turn than drones make.
+fn links(
+    t: &Track,
+    p: &Place,
+    time: DateTime<Utc>,
+    slow: bool,
+    turn: &dyn Fn(&Track, &Place) -> f64,
+) -> bool {
+    let hours = (time - t.head().first).num_milliseconds() as f64 / 3.6e6;
+    hours > 0.0
+        && !placeless(t)
+        && plausible_leg(km(&t.head().place, p), hours, slow || t.head().slow)
+        && turn(t, p) <= MAX_TURN_DEG
 }
 
 /// The latest track heading for `place`, else the latest one whose waypoint is near it.
@@ -2809,6 +2893,44 @@ mod tests {
             t.signal("🛵 1 Звичайний Шахед Калинівку\n\nВін не реактивний, тому й так повільно тягнеться"),
             Signal::Drone { slow: true, .. }
         ));
+    }
+
+    /// 2026-10-14 22:20: "на Жмеринку", then "▪️1 на Тульчин; ▪️1 на Бар": the drone at
+    /// Жмеринка goes on west to Бар, Тульчин is another one (not one flying back south-east).
+    #[test]
+    fn summary_lines_go_to_the_drones_they_fit() {
+        let mut t = tracker();
+        t.update([
+            post(1, "2026-10-14T22:20:40Z", "🛵 Звичайний Шахед на Жмеринку"),
+            post(
+                2,
+                "2026-10-14T22:29:49Z",
+                "🛵 2 Шахеди над Вінниччиною:\n\n▪️1 на Тульчин (Тульчинщина);\n▪️1 на Бар (Жмеринщина).",
+            ),
+        ]);
+        let paths: Vec<Vec<String>> = t
+            .drones(at("2026-10-14T22:30:00Z"))
+            .into_iter()
+            .map(|d| d.path.into_iter().map(|p| p.0).collect())
+            .collect();
+        assert!(paths.contains(&vec!["Жмеринка".to_owned(), "Бар".to_owned()]), "{paths:?}");
+        assert!(paths.contains(&vec!["Тульчин".to_owned()]), "{paths:?}");
+    }
+
+    /// 2026-10-20 15:18 "на Бар", 15:26 "пролетів Жмеринку": it came by Жмеринка on its way
+    /// to Бар, not back east to Жмеринка.
+    #[test]
+    fn a_place_flown_past_is_where_it_came_from() {
+        let mut t = tracker();
+        t.update([
+            post(1, "2026-10-20T12:18:00Z", "🛵 1 Реактивний Шахед на Бар"),
+            post(2, "2026-10-20T12:26:00Z", "🛵 Реактивний Шахед пролетів Жмеринку"),
+        ]);
+        let drones = t.drones(at("2026-10-20T12:26:30Z"));
+        assert_eq!(drones.len(), 1, "{drones:?}");
+        assert_eq!(drones[0].heading_to, "Бар");
+        let path: Vec<&str> = drones[0].path.iter().map(|p| p.0.as_str()).collect();
+        assert_eq!(path, ["Жмеринка", "Бар"]);
     }
 
     /// 2026-10-26 13:04: a repost of the morning's hit, "Епіцентр" no district "центр".

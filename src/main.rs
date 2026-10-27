@@ -213,8 +213,11 @@ fn past(
         Model::from_json(include_str!("../data/model.json")),
     );
     t.update(posts.clone());
-    let tracks = t.past_tracks();
+    // The ways past drones came, so a drone known at one place only is not taken to turn back
+    // (Tracker::turn); then the tracks again with them.
     let routes = t.route_legs();
+    t.set_routes(routes.clone());
+    let tracks = t.past_tracks();
     let drones = t.all_past_tracks();
     let passages = predict::passages(&drones);
     eprintln!(
