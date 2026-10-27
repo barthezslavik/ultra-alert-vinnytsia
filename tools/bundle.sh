@@ -9,6 +9,7 @@ if [ -z "${BIN:-}" ]; then
   cargo build --release
   BIN="$target/release/ultra-alert"
 fi
+version=$(sed -nE 's/^version = "(.*)"/\1/p' Cargo.toml | head -1)
 app="${1:-$target/release}/Ultra Alert.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
@@ -22,7 +23,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>com.barthezslavik.ultra-alert</string>
   <key>CFBundleExecutable</key><string>ultra-alert</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>

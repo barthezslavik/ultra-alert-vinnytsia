@@ -450,6 +450,22 @@ fn if_city(tracker: &Tracker, now: DateTime<Utc>) -> String {
     }
 }
 
+/// "Карта ↗", with how far the channel's history is while the first launch fetches it.
+fn map_text(state: &web::State) -> String {
+    let ready = state.past.lock().is_ok_and(|p| p.is_some());
+    let progress: serde_json::Value = state
+        .progress
+        .lock()
+        .ok()
+        .and_then(|p| serde_json::from_str(&p).ok())
+        .unwrap_or_default();
+    match (ready, progress["stage"].as_str(), progress["p"].as_f64()) {
+        (false, Some("fetch"), Some(p)) => format!("Карта ↗ (історія {:.0}%)", p * 100.0),
+        (false, Some("build"), _) => "Карта ↗ (обробка історії…)".into(),
+        _ => "Карта ↗".into(),
+    }
+}
+
 /// The menu's text for the tracker's state at `now`.
 fn describe(tracker: &Tracker, now: DateTime<Utc>, from_label: &str) -> View {
     let local =
@@ -828,6 +844,7 @@ impl App {
             ));
         }
         self.if_item.set_text(if_city(&self.tracker, self.now()));
+        self.map_item.set_text(map_text(&self.map_state));
     }
 }
 
@@ -1076,13 +1093,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("PPO_SINCE")
                 .with_timezone(&Utc);
             let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime");
-            let fetched = runtime.block_on(archive.catch_up(&reqwest::Client::new(), since));
+            let progress_state = history_state.clone();
+            let mut progress = |p: f64, oldest: DateTime<Utc>| {
+                if let Ok(mut s) = progress_state.progress.lock() {
+                    *s = serde_json::json!({ "stage": "fetch", "p": p, "oldest": oldest.to_rfc3339() })
+                        .to_string();
+                }
+            };
+            if let Ok(mut s) = history_state.progress.lock() {
+                *s = serde_json::json!({ "stage": "fetch", "p": 0.0 }).to_string();
+            }
+            let fetched =
+                runtime.block_on(archive.catch_up(&reqwest::Client::new(), since, &mut progress));
             eprintln!("history: {fetched} posts fetched");
             if let Err(err) = archive.save() {
                 eprintln!("history not saved: {err}");
             }
         }
         loop {
+            if let Ok(mut s) = history_state.progress.lock() {
+                *s = serde_json::json!({ "stage": "build" }).to_string();
+            }
             let (past, routes, passages) = past(archive.posts(), home, from_label);
             if let Ok(mut p) = history_state.past.lock() {
                 *p = Some(std::sync::Arc::new(past));

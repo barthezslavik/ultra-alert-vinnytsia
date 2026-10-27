@@ -38,6 +38,11 @@
   #list h2 { margin: 0; padding: 10px 14px 6px; font-size: 15px; }
   #items { overflow-y: auto; padding: 0 6px 8px; }
   .day { color: var(--muted); font-size: 12px; margin: 10px 8px 4px; }
+  .progress { margin: 14px 8px; font-size: 13px; color: var(--muted); }
+  .pbar { margin-top: 8px; height: 6px; border-radius: 3px; background: rgba(127,127,127,.2); overflow: hidden; }
+  .pbar div { height: 100%; background: var(--drone); border-radius: 3px; transition: width .4s; }
+  .pbar.busy div { width: 100%; animation: busy 1.2s ease-in-out infinite; }
+  @keyframes busy { 50% { opacity: .35; } }
   .item { padding: 6px 8px; border-radius: 8px; cursor: pointer; border-left: 3px solid transparent; }
   .item:hover { background: rgba(127,127,127,.15); }
   .item.on { background: rgba(10,132,255,.18); }
@@ -233,8 +238,15 @@ const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&
 async function loadDrones() {
   const r = await fetch('/drones.json', { cache: 'no-store' }).catch(() => null);
   if (!r || !r.ok) {
-    $('listn').textContent = '(ще рахується)';
-    setTimeout(loadDrones, 2000);
+    // First launch: the channel's history is still being fetched, then worked through.
+    const p = await fetch('/progress.json', { cache: 'no-store' }).then(x => x.json()).catch(() => ({}));
+    const day = p.oldest && new Date(p.oldest).toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
+    const [text, bar] = p.stage === 'fetch'
+      ? [`Завантаження історії каналу: ${Math.round(p.p * 100)}%${day ? ` (до ${day})` : ''}`, `<div class="pbar"><div style="width:${p.p * 100}%"></div></div>`]
+      : ['Обробка історії…', '<div class="pbar busy"><div></div></div>'];
+    $('listn').textContent = '';
+    $('items').innerHTML = `<div class="progress">${text}${bar}</div>`;
+    setTimeout(loadDrones, 1000);
     return;
   }
   const fresh = await r.json();

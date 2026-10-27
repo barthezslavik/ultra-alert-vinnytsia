@@ -65,8 +65,15 @@ impl Archive {
 
     /// Walks back from the newest post until `since`, or until a few pages into what is
     /// already stored: the first launch fetches it all (some 100 pages), later ones the gap
-    /// while the app was not running. Returns how many posts were new or edited.
-    pub async fn catch_up(&mut self, client: &reqwest::Client, since: DateTime<Utc>) -> usize {
+    /// while the app was not running. Returns how many posts were new or edited. `progress`
+    /// gets after each page how far back it has got, 0 to 1, and the date it reached.
+    pub async fn catch_up(
+        &mut self,
+        client: &reqwest::Client,
+        since: DateTime<Utc>,
+        progress: &mut dyn FnMut(f64, DateTime<Utc>),
+    ) -> usize {
+        let now = Utc::now();
         let (mut before, mut known_pages, mut changed) = (None, 0, 0);
         loop {
             let Some(page) = self.page(client, before).await else {
@@ -82,6 +89,8 @@ impl Archive {
                 .filter(|p| self.add([p.clone()]))
                 .count();
             known_pages = if known { known_pages + 1 } else { 0 };
+            let span = (now - since).num_seconds().max(1) as f64;
+            progress(((now - oldest.time).num_seconds() as f64 / span).clamp(0.0, 1.0), oldest.time);
             if oldest.time < since || known_pages >= OVERLAP_PAGES {
                 break;
             }

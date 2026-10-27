@@ -23,6 +23,10 @@ pub struct Shared {
     /// The channel history as the map shows it; None until first computed in the background,
     /// replaced when new posts come in.
     pub past: Mutex<Option<Arc<Past>>>,
+    /// How far getting that history is, as JSON (/progress.json): {"stage": "fetch", "p": 0..1,
+    /// "oldest": …} while the channel's history is fetched, {"stage": "build"} while it is
+    /// worked through.
+    pub progress: Mutex<String>,
 }
 
 pub struct Past {
@@ -97,6 +101,10 @@ fn respond(stream: TcpStream, state: &Shared, port: u16) -> std::io::Result<()> 
             Some(p) => ("200 OK", "application/json", p.tracks.clone()),
             None => not_ready,
         }
+    } else if path == "/progress.json" {
+        let progress = state.progress.lock().map(|p| p.clone()).unwrap_or_default();
+        let body = if progress.is_empty() { "{}".to_owned() } else { progress };
+        ("200 OK", "application/json", body)
     } else if path == "/drones.json" {
         match past {
             Some(p) => ("200 OK", "application/json", p.drones.clone()),
