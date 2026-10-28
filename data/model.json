@@ -20,18 +20,18 @@
   "n_impacts": 51,
   "speed_kmh": 447,
   "trajectory": {
-    "district_lead_km": 12.75,
+    "district_lead_km": 9.75,
     "fallback_after_s": 1200,
     "fit": "cargo test --release fit_trajectory -- --ignored --nocapture",
-    "lead_km": 27.5,
-    "lead_per_km": 0,
+    "lead_km": 25.0,
+    "lead_per_km": 0.0,
     "route_angle_deg": 30,
     "route_min": 3,
     "route_radius_km": 20,
-    "sigma_alert_s": 93,
-    "sigma_district_s": 31,
-    "sigma_waypoint_s": 93,
-    "speed_kmh": 425
+    "sigma_alert_s": 98.0,
+    "sigma_district_s": 40.0,
+    "sigma_waypoint_s": 98.0,
+    "speed_kmh": 400.0
   },
   "vinnytsia": [
     49.2331,
