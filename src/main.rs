@@ -276,18 +276,39 @@ fn drone_list(tracks: &[predict::PastTrack], gazetteer: &gazetteer::Gazetteer) -
                 Some((t.with_timezone(&Utc), i["place"].as_str()?.to_owned()))
             })
             .collect();
+    // Each impact goes to one drone and each drone gets one at most: the pairs that fit best
+    // (nearest the drone's last place, soonest after its last post) first (2026-10-22: three
+    // hits on the city at 16:25, 16:29 and 16:34 were all credited 16:25).
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for (i, t) in tracks.iter().enumerate() {
+        let last = t.times.last().copied().unwrap_or(t.start);
+        let (_, lat, lon) = t.path.last().cloned().unwrap_or_default();
+        for (j, (at, place)) in impacts.iter().enumerate() {
+            let Some(p) = gazetteer.place(place) else {
+                continue;
+            };
+            let d = predict::haversine_km(p.lat, p.lon, lat, lon);
+            if *at >= t.start && *at <= last + HIT_AFTER && d <= HIT_KM {
+                let minutes = (*at - last).num_seconds().abs() as f64 / 60.0;
+                pairs.push((d + minutes, i, j));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut hit_of: Vec<Option<usize>> = vec![None; tracks.len()];
+    let mut taken = vec![false; impacts.len()];
+    for (_, i, j) in pairs {
+        if hit_of[i].is_none() && !taken[j] {
+            hit_of[i] = Some(j);
+            taken[j] = true;
+        }
+    }
     tracks
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
             let last = t.times.last().copied().unwrap_or(t.start);
-            let (_, lat, lon) = t.path.last().cloned().unwrap_or_default();
-            let hit = impacts.iter().find(|(at, place)| {
-                *at >= t.start
-                    && *at <= last + HIT_AFTER
-                    && gazetteer
-                        .place(place)
-                        .is_some_and(|p| predict::haversine_km(p.lat, p.lon, lat, lon) <= HIT_KM)
-            });
+            let hit = hit_of[i].map(|j| &impacts[j]);
             // Districts after "на Вінницю" are the city again by name.
             let mut path: Vec<&String> = t.path.iter().map(|p| &p.0).collect();
             path.dedup();

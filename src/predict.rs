@@ -31,7 +31,9 @@ const MAX_EXTRAPOLATION: Duration = Duration::minutes(15);
 const LINK_SPEED_KMH: std::ops::RangeInclusive<f64> = 150.0..=750.0;
 /// Nor a waypoint farther than this from the track's last one: posts name the next town.
 const MAX_LEG_KM: f64 = 100.0;
-/// Distance allowed beyond the speed range: a couple of minutes of posting jitter.
+/// Distance allowed beyond the speed range: a couple of minutes of posting jitter, and posts name
+/// where a drone heads next, not where it is ("на Гайсин", 5 min later "на Брацлав" 33 km on is
+/// one slow drone; 5 km made it the one by Бар, 95 km back east).
 const LINK_SLACK_KM: f64 = 15.0;
 /// The same for a slow (ordinary) Shahed on either end of the link.
 const SLOW_LINK_SPEED_KMH: std::ops::RangeInclusive<f64> = 60.0..=250.0;
