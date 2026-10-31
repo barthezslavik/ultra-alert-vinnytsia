@@ -116,6 +116,25 @@ function destination(lat, lon, bearing, km) {
   return [p2 / r, l2 / r];
 }
 
+function bearingTo(a, b) {
+  const r = Math.PI / 180, p1 = a[0] * r, p2 = b[0] * r, dl = (b[1] - a[1]) * r;
+  const y = Math.sin(dl) * Math.cos(p2), x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+const turnBetween = (a, b) => { const x = Math.abs(a - b) % 360; return Math.min(x, 360 - x); };
+
+// "на X" is where it heads: until it gets there the way runs to where it is now and on to X
+// faintly, not to X and back (2026-10-31: a quarter of the frames turned back at the last
+// waypoint); once past X, through X to where it is.
+function fly(d, pts, way, trail, target, at) {
+  const head = pts[pts.length - 1];
+  const short = map.distance(at, head) > 500 && turnBetween(bearingTo(at, head), d.course) < 90;
+  const flown = short ? pts.slice(0, -1) : pts;
+  way.setLatLngs(flown);
+  trail.setLatLngs(flown.length ? [flown[flown.length - 1], at] : []);
+  target.setLatLngs(short ? [at, head] : []);
+}
+
 function arrow(course, color) {
   const svg = course == null
     ? `<svg width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="${color}" stroke="#fff" stroke-width="2"/><text x="11" y="15" font-size="11" text-anchor="middle" fill="#fff" font-weight="700">?</text></svg>`
@@ -160,25 +179,30 @@ function draw(s) {
   for (const d of s.drones) {
     const color = d.km < 15 ? threat : drone;
     const pts = d.path.map(p => [p[1], p[2]]);
-    if (pts.length > 1) L.polyline(pts, { color: fg, weight: 2, opacity: .7 }).addTo(layer);
+    // With a course, its flown way is drawn up to where it is now (frame()); without one, the
+    // waypoints as they are.
+    const way = L.polyline(pts, { color: fg, weight: 2, opacity: .7 }).addTo(layer);
     d.path.forEach((p, i) => {
       L.circleMarker([p[1], p[2]], { radius: 4, color: fg, weight: 1, fillColor: fg, fillOpacity: i == d.path.length - 1 ? 1 : .4 })
         .bindTooltip(p[0], { className: 'wp', permanent: i == d.path.length - 1, direction: 'right', offset: [6, 0] })
         .addTo(layer);
       bounds.push([p[1], p[2]]);
     });
-    let trail = null, ahead = null;
+    let trail = null, ahead = null, target = null;
     if (d.course == null) {
       // Course unknown: somewhere about L short of the waypoint, from any side.
       L.circle([d.lat, d.lon], { radius: d.lead_km * 1000, color, weight: 1.5, dashArray: '4 6', fillOpacity: .05 }).addTo(layer);
     } else {
-      // Dead reckoning since the last waypoint was announced, and five minutes ahead.
-      trail = L.polyline([pts[pts.length - 1], [d.lat, d.lon]], { color, weight: 2, opacity: .8 }).addTo(layer);
+      // Dead reckoning since the last waypoint was announced, and five minutes ahead; while it
+      // has not reached the place it was posted heading for, a faint line on to it.
+      trail = L.polyline([], { color, weight: 2, opacity: .8 }).addTo(layer);
+      target = L.polyline([], { color, weight: 1.5, opacity: .6, dashArray: '2 6' }).addTo(layer);
       ahead = L.polyline([[d.lat, d.lon], destination(d.lat, d.lon, d.course, d.speed_kmh / 12)],
         { color, weight: 2, dashArray: '6 6' }).addTo(layer);
+      fly(d, pts, way, trail, target, [d.lat, d.lon]);
     }
     const marker = L.marker([d.lat, d.lon], { icon: arrow(d.course, color) }).bindTooltip(tip(s, d)).addTo(layer);
-    live.push({ d, marker, trail, ahead });
+    live.push({ d, pts, way, marker, trail, ahead, target });
     bounds.push([d.lat, d.lon]);
   }
   if (!framed && s.drones.length) {
@@ -196,11 +220,11 @@ function frame() {
     const dt = replay
       ? (replay.t - Date.parse(state.now)) / 1000
       : Math.min((performance.now() - received) / 1000, 2) * state.rate;
-    for (const { d, marker, trail, ahead } of live) {
+    for (const { d, pts, way, marker, trail, ahead, target } of live) {
       if (d.course == null) continue;
       const at = destination(d.lat, d.lon, d.course, d.speed_kmh * dt / 3600);
       marker.setLatLng(at);
-      trail.setLatLngs([trail.getLatLngs()[0], at]);
+      fly(d, pts, way, trail, target, at);
       ahead.setLatLngs([at, destination(at[0], at[1], d.course, d.speed_kmh / 12)]);
     }
   }

@@ -34,7 +34,7 @@ const MAX_LEG_KM: f64 = 100.0;
 /// Distance allowed beyond the speed range: a couple of minutes of posting jitter.
 const LINK_SLACK_KM: f64 = 15.0;
 /// The same for a slow (ordinary) Shahed on either end of the link.
-const SLOW_LINK_SPEED_KMH: std::ops::RangeInclusive<f64> = 60.0..=350.0;
+const SLOW_LINK_SPEED_KMH: std::ops::RangeInclusive<f64> = 60.0..=250.0;
 const MAX_TURN_DEG: f64 = 100.0;
 /// Turning for the city: posts name the city when the drone swings for it, the turn can be
 /// sharper than between two towns ("на Вороновицю" from Тиврів, then the city: 101°).
@@ -145,8 +145,11 @@ enum Signal {
     /// `early`: "залітає на Вінниччину, Вінниця вже може займати укриття": sent to the city
     /// while still at the oblast's edge.
     /// `passed`: "пролетів Жмеринку": a place it has flown past, not where it heads.
+    /// `typed`: the post says what kind ("реактивний", "звичайний", "ударний"); "1 Шахед на X"
+    /// does not, and is of the kind the attack's last typed post said.
     Drone {
         slow: bool,
+        typed: bool,
         fresh: bool,
         maybe: bool,
         early: bool,
@@ -247,6 +250,8 @@ struct Waypoint {
     place: Place,
     first: DateTime<Utc>,
     slow: bool,
+    /// Its post said the kind ("реактивний", "звичайний"), not taken from earlier posts.
+    typed: bool,
     /// Posted as city districts ("Тяжилів / Хутори укриття"): the drone is at the city edge.
     district: bool,
     /// Posting delay of the channel it came from, s.
@@ -260,12 +265,46 @@ struct Waypoint {
 struct Track {
     points: Vec<Waypoint>,
     origin: Option<Place>,
+    /// When a post said where it came from ("з Одещини").
+    origin_at: Option<DateTime<Utc>>,
     last_seen: DateTime<Utc>,
     /// Every place its posts said it heads for ("на Вороновицю курсом на Вінницю").
     targets: Vec<String>,
 }
 
 impl Track {
+    /// Its pace between its posts, km/h, once three of them span a few minutes: the way it
+    /// flies tells its kind better than the words (2026-10-31: "1 Шахед на …" all evening).
+    fn pace_kmh(&self) -> Option<f64> {
+        let (first, last) = (self.points.first()?, self.points.last()?);
+        let hours = (last.first - first.first).num_seconds() as f64 / 3600.0;
+        if self.points.len() < 3 || hours < PACE_MIN.num_seconds() as f64 / 3600.0 {
+            return None;
+        }
+        let km: f64 = self.points.windows(2).map(|w| km(&w[0].place, &w[1].place)).sum();
+        Some(km / hours)
+    }
+
+    /// Slow or jet by its pace, past either way's margin of what the posts said: jets go some
+    /// 430 km/h from post to post (most over 290), slow ones some 170 (most under 290). Only
+    /// when no post of it said its kind: a jet named so stays one however its posts went (taken
+    /// for slow by their pace, three Vinnytsia hits were 3-8 min later than forecast).
+    fn kind_from_pace(&mut self) {
+        if self.points.iter().any(|w| w.typed) {
+            return;
+        }
+        let Some(pace) = self.pace_kmh() else {
+            return;
+        };
+        let slow = match self.head().slow {
+            false => pace < PACE_SLOW_BELOW_KMH,
+            true => pace <= PACE_JET_ABOVE_KMH,
+        };
+        for w in &mut self.points {
+            w.slow = slow;
+        }
+    }
+
     fn head(&self) -> &Waypoint {
         self.points.last().expect("track has a waypoint")
     }
@@ -391,6 +430,15 @@ const SHORT_DISTRICT_LIST: usize = 5;
 static AFTERMATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(наслід\w*|внаслідок|вночі|вдарив|вдарили|постраждал\w*|загинул\w*|поранен\w*|зруйнован\w*|момент\s+влучанн\w*|відео\w*)\b").unwrap()
 });
+/// A drone's pace counts once its posts span this long.
+const PACE_MIN: Duration = Duration::minutes(6);
+/// Below this pace a drone posted as a jet is a slow one; above that one, one posted slow is a
+/// jet (2026-10-31, the history's tracks of three posts or more: jets median 432 km/h, 10th
+/// percentile 288; slow ones median 173, 90th percentile 286).
+const PACE_SLOW_BELOW_KMH: f64 = 230.0;
+const PACE_JET_ABOVE_KMH: f64 = 330.0;
+/// How long a post's kind of drone stands for the untyped posts after it.
+const KIND_KEPT: Duration = Duration::hours(6);
 /// How much nearer than its rough centre a neighbouring oblast's edge facing us is, km.
 const REGION_EDGE_KM: f64 = 70.0;
 /// Odds a drone is sent to the city, from past drones posted before ODDS_SETTLED on a course
@@ -693,6 +741,7 @@ impl Tracker {
                 maybe: self.maybe(text),
                 early: lower.contains("може займати"),
                 passed: !summary && PASSED.is_match(&lower),
+                typed: drone_type(&lower).is_some(),
                 route,
                 district,
                 district_at,
@@ -950,8 +999,10 @@ impl Tracker {
         let today = now.with_timezone(&Local).date_naive();
         let (mut s, mut c, mut n) = (0.0, 0.0, 0);
         for l in &self.routes {
+            // A past drone that went back the way it came is two drones joined, not a turn.
             if l.day != today
                 && angle_between(l.came, course) <= m.route_angle_deg
+                && angle_between(l.came, l.left) <= MAX_TURN_DEG
                 && haversine_km(l.lat, l.lon, at.lat, at.lon) <= m.route_radius_km
             {
                 s += l.left.to_radians().sin();
@@ -978,7 +1029,11 @@ impl Tracker {
             return Vec::new();
         };
         let mut found: Vec<Track> = Vec::new();
-        let live = self.follow(&self.events_since(DateTime::<Utc>::MIN_UTC, now), Some(&mut found));
+        let live = self.follow(
+            &self.events_since(DateTime::<Utc>::MIN_UTC, now),
+            Some(&mut found),
+            None,
+        );
         found.extend(live);
         let mut out: Vec<PastTrack> = found
             .iter()
@@ -1047,8 +1102,14 @@ impl Tracker {
         }
         let target = self.target();
         since_clear(&self.events(now)).iter().rev().find_map(|e| {
-            let Signal::Drone { route, slow, .. } = &e.signal else {
+            let Signal::Drone { route, slow, typed, .. } = &e.signal else {
                 return None;
+            };
+            // "1 Шахед на Гайсинський район": of the kind the attack's posts said.
+            let slow = &if *typed {
+                *slow
+            } else {
+                self.kind_before(e.time).map_or(*slow, |(k, _)| k)
             };
             let m = route
                 .iter()
@@ -1116,7 +1177,8 @@ impl Tracker {
                 })
                 .collect()
         };
-        let fewest = each.iter().map(|(_, n)| *n).min()?;
+        // No past drone was where one is now: the share of all of them is no estimate for it.
+        let fewest = each.iter().map(|(_, n)| *n).min().filter(|n| *n > 0)?;
         let none: f64 = each.iter().map(|(p, _)| 1.0 - p).product();
         Some((1.0 - none, fewest))
     }
@@ -1174,17 +1236,40 @@ impl Tracker {
     }
 
     fn tracks(&self, events: &[Event], now: DateTime<Utc>) -> Vec<Track> {
-        let mut tracks = self.follow(events, None);
+        // The kind the attack's posts said before these, a "чисто" or the hour ago it starts.
+        let kind = events.first().and_then(|e| self.kind_before(e.time));
+        let mut tracks = self.follow(events, None, kind);
         tracks.retain(|t| now - t.last_seen <= TRACK_TTL);
         tracks
     }
 
+    /// What kind of drone the last post that said so before `time` said, within KIND_KEPT and
+    /// across a "чисто" (2026-10-31: "Ударний керований Шахед" at 15:58, "чисто" at 16:10, then
+    /// "1 Шахед на Гайсин" all evening): (slow, when).
+    fn kind_before(&self, time: DateTime<Utc>) -> Option<(bool, DateTime<Utc>)> {
+        self.events_since(time - KIND_KEPT, time)
+            .iter()
+            .rev()
+            .filter(|e| e.time < time)
+            .find_map(|e| match e.signal {
+                Signal::Drone { typed: true, slow, .. } => Some((slow, e.time)),
+                _ => None,
+            })
+    }
+
     /// The drones `events` tell of, in one pass. With `ended`, the whole history: a drone
     /// not posted for TRACK_TTL, hit or cleared goes there, the rest are returned.
-    fn follow(&self, events: &[Event], mut ended: Option<&mut Vec<Track>>) -> Vec<Track> {
+    fn follow(
+        &self,
+        events: &[Event],
+        mut ended: Option<&mut Vec<Track>>,
+        kind: Option<(bool, DateTime<Utc>)>,
+    ) -> Vec<Track> {
         let mut tracks: Vec<Track> = Vec::new();
         // "підлітає з Одещини" without a waypoint: the origin of the next new track.
         let mut pending: Option<(Place, DateTime<Utc>)> = None;
+        // The kind of drone the attack's last typed post said, and when.
+        let mut kind = kind;
         for e in events {
             if let Some(ended) = ended.as_deref_mut() {
                 if e.signal == Signal::Clear {
@@ -1213,6 +1298,7 @@ impl Tracker {
             }
             let Signal::Drone {
                 slow,
+                typed,
                 fresh,
                 maybe,
                 passed,
@@ -1226,6 +1312,18 @@ impl Tracker {
             else {
                 continue;
             };
+            // Untyped posts are of the kind the attack's last typed post said (2026-10-31: "1 Шахед
+            // на Тростянець" after "Ударний керований Шахед …", then "Він не реактивний").
+            if *typed {
+                kind = Some((*slow, e.time));
+            }
+            let own: Option<(bool, Vec<bool>)> = kind
+                .filter(|(_, at)| !*typed && e.time - *at <= KIND_KEPT)
+                .map(|(k, _)| (k, vec![k; slow_each.len()]));
+            let (slow, slow_each) = match &own {
+                Some((k, each)) => (k, each),
+                None => (slow, slow_each),
+            };
             let delay_s = self.delay_s(&e.channel);
             if *district {
                 self.observe_district(&mut tracks, *district_at, *slow, e.time, delay_s);
@@ -1234,7 +1332,7 @@ impl Tracker {
             let origin = route
                 .iter()
                 .rfind(|m| m.role == Role::Behind)
-                .map(|m| m.place.clone());
+                .map(|m| (m.place.clone(), e.time));
             // A summary lists one place per drone; any other post is one drone's route.
             let heads: Vec<(&Place, bool)> = if *summary {
                 route
@@ -1247,14 +1345,13 @@ impl Tracker {
                 ahead(route).map(|p| (p, *slow)).into_iter().collect()
             };
             if heads.is_empty() {
-                pending = origin.map(|o| (o, e.time));
+                pending = origin;
                 continue;
             }
             let origin = origin.or_else(|| {
                 pending
                     .take()
                     .filter(|(_, t)| e.time - *t <= TRACK_TTL)
-                    .map(|(o, _)| o)
             });
             let targets: Vec<String> = if *summary {
                 Vec::new()
@@ -1297,6 +1394,7 @@ impl Tracker {
                     &p,
                     origin.clone(),
                     slow,
+                    *typed,
                     *fresh,
                     *passed,
                     e.time,
@@ -1711,8 +1809,11 @@ impl Tracker {
             && placeless(t)
             && let Some(from) = t.origin.as_ref().filter(|o| o.region)
         {
+            // From when that oblast was said: it has flown on since (2026-10-14: "з Одещини"
+            // at 22:43, "на ВІННИЦЮ" at 23:01, the hit at 23:06).
+            let since = t.origin_at.unwrap_or(t.points[0].first);
             let km_left = (km(from, target) - REGION_EDGE_KM).max(0.0);
-            eta = eta.max(t.points[0].first + seconds(km_left / self.model.speed_kmh * 3600.0));
+            eta = eta.max(since + seconds(km_left / self.model.speed_kmh * 3600.0));
         }
         // A fresh "на <target>" after the predicted arrival: the drone is still on its way, but
         // once districts were named it is over the city ("ШАХЕД ПАДАЄ"), not a whole L out.
@@ -1829,6 +1930,7 @@ impl Tracker {
             place,
             first: time,
             slow,
+            typed: false,
             district: true,
             delay_s,
             turned: self.model.district_turns && !tracks.iter().any(|t| t.head().district),
@@ -1843,6 +1945,7 @@ impl Tracker {
             None => tracks.push(Track {
                 points: vec![point],
                 origin: None,
+                origin_at: None,
                 last_seen: time,
                 targets: vec![self.city.name.clone()],
             }),
@@ -1876,8 +1979,9 @@ fn placeless(t: &Track) -> bool {
 fn observe(
     tracks: &mut Vec<Track>,
     p: &Place,
-    origin: Option<Place>,
+    origin: Option<(Place, DateTime<Utc>)>,
     slow: bool,
+    typed: bool,
     fresh: bool,
     passed: bool,
     time: DateTime<Utc>,
@@ -1899,8 +2003,11 @@ fn observe(
             .filter(|&i| !taken.contains(&i) && pick(&tracks[i]))
             .max_by_key(|&i| tracks[i].last_seen)
     };
-    // Same heading again: a reminder, not a new position; "ще один на X" is another drone.
-    if let Some(i) = latest(&|t| !fresh && t.head().place.name == p.name) {
+    // Same heading again: a reminder, not a new position; "ще один на X" is another drone. Not
+    // of one gone quiet (2026-10-31: "на Козятин" at 19:43 is no reminder of 18:51's).
+    if let Some(i) =
+        latest(&|t| !fresh && t.head().place.name == p.name && time - t.last_seen <= TRACK_TTL)
+    {
         let t = &mut tracks[i];
         t.last_seen = time;
         add_targets(t);
@@ -1921,6 +2028,7 @@ fn observe(
         let t = &mut tracks[i];
         if t.points.len() == 1 && t.origin.is_none() {
             t.origin = Some(p.clone());
+            t.origin_at = Some(time);
         }
         t.last_seen = time;
         return i;
@@ -1960,6 +2068,7 @@ fn observe(
         place: p.clone(),
         first: time,
         slow,
+        typed,
         district: false,
         delay_s,
         turned,
@@ -1984,12 +2093,15 @@ fn observe(
             t.points.push(point);
             t.last_seen = time;
             add_targets(t);
+            t.kind_from_pace();
             i
         }
         None => {
+            let (origin, origin_at) = origin.unzip();
             tracks.push(Track {
                 points: vec![point],
                 origin,
+                origin_at,
                 last_seen: time,
                 targets: targets.to_vec(),
             });
@@ -2004,8 +2116,8 @@ fn unlikeness(t: &Track, p: &Place, turn: &dyn Fn(&Track, &Place) -> f64) -> f64
     turn(t, p) + km(&t.head().place, p)
 }
 
-/// Could the drone of `t` be the one posted at `p` now: near enough for the time since, and no
-/// sharper turn than drones make.
+/// Could the drone of `t` be the one posted at `p` now: still about, near enough for the time
+/// since, and no sharper turn than drones make.
 fn links(
     t: &Track,
     p: &Place,
@@ -2014,7 +2126,10 @@ fn links(
     turn: &dyn Fn(&Track, &Place) -> f64,
 ) -> bool {
     let hours = (time - t.head().first).num_milliseconds() as f64 / 3.6e6;
+    // A drone not posted for TRACK_TTL is gone (2026-10-31: "на Бар" at 19:40 is not the one
+    // last posted at Брацлав at 18:53).
     hours > 0.0
+        && time - t.last_seen <= TRACK_TTL
         && !placeless(t)
         && plausible_leg(km(&t.head().place, p), hours, slow || t.head().slow)
         && turn(t, p) <= MAX_TURN_DEG
@@ -2516,6 +2631,35 @@ mod tests {
         // Two of three from today: too few.
         t.set_routes(vec![leg(20, 300.0), leg(24, 290.0), leg(24, 310.0)]);
         assert!(t.route_course(&rakhny, 325.0, now).is_none());
+        // Back the way they came: two drones joined, no route (2026-10-31, Гнівань).
+        t.set_routes(vec![leg(20, 140.0), leg(21, 145.0), leg(22, 135.0), leg(23, 300.0)]);
+        assert!(t.route_course(&rakhny, 325.0, now).is_none());
+    }
+
+    /// 2026-10-31: "Ударний керований Шахед" at 15:37-15:58, "чисто" at 16:10, then "1 Шахед на
+    /// …" all evening: slow ones, live too, where the tracker looks back only an hour.
+    #[test]
+    fn untyped_posts_are_of_the_attacks_kind() {
+        let mut t = tracker();
+        t.update([
+            post(1, "2026-10-31T13:37:00Z", "🛵 1 Ударний керований Шахед на Козятин"),
+            post(2, "2026-10-31T14:10:00Z", "📡 Чисто на Вінниччині🫡"),
+            post(3, "2026-10-31T15:02:00Z", "🛵 1 Шахед на Гайсин"),
+        ]);
+        let drones = t.drones(at("2026-10-31T15:03:00Z"));
+        assert_eq!(drones.len(), 1, "{drones:?}");
+        assert!(drones[0].slow, "{drones:?}");
+        // Nothing said before: a jet, until its posts show its pace.
+        let mut t = tracker();
+        t.update([
+            post(1, "2026-10-31T12:00:00Z", "🛵 1 Шахед на Немирів"),
+            post(2, "2026-10-31T12:10:00Z", "🛵 1 Шахед на Вороновицю"),
+        ]);
+        assert!(!t.drones(at("2026-10-31T12:10:30Z"))[0].slow);
+        t.update([post(3, "2026-10-31T12:20:00Z", "🛵 1 Шахед на Тиврів")]);
+        let drones = t.drones(at("2026-10-31T12:20:30Z"));
+        assert_eq!(drones.len(), 1, "{drones:?}");
+        assert!(drones[0].slow, "40 km in 20 min is no jet: {drones:?}");
     }
 
     /// 2026-10-24: four villages are called Пеньківка; the drone coming up from Рахни-Лісові

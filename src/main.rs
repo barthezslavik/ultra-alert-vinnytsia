@@ -330,7 +330,8 @@ fn replay_frames(
     tracker.update(
         posts
             .iter()
-            .filter(|p| p.time >= start - chrono::TimeDelta::hours(1) && p.time <= end)
+            // Six hours back, as the live app: what kind of drone the attack's posts said.
+            .filter(|p| p.time >= start - chrono::TimeDelta::hours(6) && p.time <= end)
             .cloned(),
     );
     let (from, until) = (
@@ -1045,6 +1046,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(at) = dismissed {
         tracker.dismiss(at);
+    }
+    // The last hours of the channel from this Mac's history: the kind of drone the attack's
+    // posts said and the drones posted before the newest page the first fetch brings.
+    if !replay_mode() {
+        let mut history = ultra_alert::archive::Archive::load(support_dir().join(HISTORY), CHANNEL);
+        history.seed(SEED_HISTORY);
+        let since = Utc::now() - chrono::TimeDelta::hours(6);
+        tracker.update(history.posts().into_iter().filter(|p| p.time >= since));
     }
     if let Some(r) = &replay {
         tracker.update(r.posts());
