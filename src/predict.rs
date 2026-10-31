@@ -498,6 +498,15 @@ const RAIONS: &[(&[&str], &str, &str)] = &[
     ),
     (&["хмільницьк", "хмільниччин"], "Хмільник", "Хмільницький район"),
 ];
+/// The all-clear itself: "Відбій загрози Шахедів", "📡 Відбій на Вінниччині 🫡".
+static ALL_CLEAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"відбій\s+(загрози|тривоги|на\s+вінниччині|по\s+(всій\s+)?області)").unwrap()
+});
+/// … not one waited for: "відбій буде дуже НЕскоро" (2026-10-31 19:55, mid-attack), "на відбій
+/// не розраховуємо", "очікуємо відбій", "мають дати відбій".
+static NOT_YET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"очіку|буде|розрахов|мають дати|дадуть|незабаром|скоро|пролунає|навіщо|на відбій").unwrap()
+});
 /// May go there, not sent there: "Може піти на Вінницю!", "Ще кілька реактивних БПЛА можуть
 /// піти на ВІННИЦЮ", "Можливо будуть повторні удари по ВІННИЦІ".
 static MAYBE: LazyLock<Regex> = LazyLock::new(|| {
@@ -674,7 +683,7 @@ impl Tracker {
             "чисто по шахедах",
             "без шахедів",
             "без загроз",
-        ]) || (has(&["відбій"]) && !has(&["ракет", "балісти"]))
+        ]) || (ALL_CLEAR.is_match(&lower) && !NOT_YET.is_match(&lower) && !has(&["ракет", "балісти"]))
         {
             return Signal::Clear;
         }
@@ -2634,6 +2643,25 @@ mod tests {
         // Back the way they came: two drones joined, no route (2026-10-31, Гнівань).
         t.set_routes(vec![leg(20, 140.0), leg(21, 145.0), leg(22, 135.0), leg(23, 300.0)]);
         assert!(t.route_course(&rakhny, 325.0, now).is_none());
+    }
+
+    /// Only the all-clear itself ends the situation, not one waited for (2026-10-31 19:55,
+    /// mid-attack: "відбій буде дуже НЕскоро").
+    #[test]
+    fn all_clear_is_said_not_awaited() {
+        let t = tracker();
+        for text in [
+            "❗️Дуже багато Шахедів летять на Вінниччину, тому відбій буде дуже НЕскоро",
+            "🛵 1 Реактивний Шахед на Теплик, тому на відбій не розраховуємо",
+            "📡 Очікуємо відбій на Вінниччині",
+            "Реактив вилітає на Хмельниччину і мають дати відбій по всій області",
+        ] {
+            assert_ne!(t.signal(text), Signal::Clear, "{text}");
+        }
+        for text in ["📡 Відбій загрози Шахедів 🫡", "📡 Відбій на Вінниччині 🫡", "Відбій тривоги в області."] {
+            assert_eq!(t.signal(text), Signal::Clear, "{text}");
+        }
+        assert_ne!(t.signal("Відбій ракетної загрози"), Signal::Clear);
     }
 
     /// 2026-10-31: "Ударний керований Шахед" at 15:37-15:58, "чисто" at 16:10, then "1 Шахед на
