@@ -418,5 +418,87 @@
       "vinnytsiappo",
       "vinnytsiarealll"
     ]
+  },
+  {
+    "t": "2026-11-03T23:53:15Z",
+    "place": "Вінниця",
+    "src": [
+      "vinnytsiappo",
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-04T07:27:22Z",
+    "place": "Вінниця",
+    "src": [
+      "vinnytsiappo",
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-04T17:04:23Z",
+    "place": "Калинівка",
+    "src": [
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-05T08:38:17Z",
+    "place": "Вінниця",
+    "src": [
+      "vinnytsiappo",
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-05T09:01:52Z",
+    "place": "Вінниця",
+    "src": [
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-05T09:01:56Z",
+    "place": "Вороновиця",
+    "src": [
+      "vinnytsiappo"
+    ]
+  },
+  {
+    "t": "2026-11-05T09:27:22Z",
+    "place": "Вінниця",
+    "src": [
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-05T09:58:31Z",
+    "place": "Ладижин",
+    "src": [
+      "vinnytsiappo",
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-05T10:09:37Z",
+    "place": "Ладижин",
+    "src": [
+      "vinnytsiarealll"
+    ]
+  },
+  {
+    "t": "2026-11-06T00:48:07Z",
+    "place": "Вінниця",
+    "src": [
+      "vinnytsiappo"
+    ]
+  },
+  {
+    "t": "2026-11-06T05:41:31Z",
+    "place": "Вінниця",
+    "src": [
+      "vinnytsiappo",
+      "vinnytsiarealll"
+    ]
   }
 ]
